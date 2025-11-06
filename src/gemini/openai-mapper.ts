@@ -206,17 +206,23 @@ const thinkingBudgetMap: Record<OpenAI.ReasoningEffort, number> = {
 };
 
 const convertOpenAIFunctionToGemini = (fn: OpenAI.FunctionDeclaration): Gemini.FunctionDeclaration => {
-    const {parameters, ...rest} = fn;
-    
+    // Only keep the fields that are valid for Gemini FunctionDeclaration
+    const {name, description, parameters, ...extraFields} = fn;
+
     if (!parameters) {
-        return fn;
+        return {
+            name: name || "",
+            description: description || "",
+            parameters: {}
+        };
     }
 
     // Convert OpenAI JSON Schema to Gemini function parameters format
     const convertedParameters = mapJsonSchemaToGemini(parameters);
 
     return {
-        ...rest,
+        name: name || "",
+        description: description || "",
         parameters: convertedParameters
     };
 };
