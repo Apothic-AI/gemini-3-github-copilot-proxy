@@ -4,6 +4,7 @@ import * as Gemini from "../types/gemini.js";
 import {CODE_ASSIST_API_VERSION, CODE_ASSIST_ENDPOINT, OPENAI_CHAT_COMPLETION_OBJECT} from "../utils/constant.js";
 import {AutoModelSwitchingHelper, type RetryableRequestData} from "./auto-model-switching.js";
 import {getLogger, Logger} from "../utils/logger.js";
+import {signatureCache} from "./signature-cache.js";
 import chalk from "chalk";
 
 /**
@@ -280,18 +281,48 @@ export class GeminiApiClient {
         let usageData: OpenAI.UsageData | undefined;
         let thinkingInProgress = false;
 
+        // Track thought signature and text for caching
+        let currentThoughtSignature: string | undefined = undefined;
+        let accumulatedThoughtText = "";
+
         for await (const jsonData of this.parseSSEStream(response.body)) {
             const candidate = jsonData.response?.candidates?.[0];
 
+            // Debug: log full response structure to find where thought_signature might be
             if (candidate?.content?.parts) {
-                for (const part of candidate.content.parts as Gemini.Part[]) {
+                const partsArray = candidate.content.parts as Gemini.Part[];
+                const hasThought = partsArray.some((p: Gemini.Part) => "text" in p && (p as Gemini.TextPart).thought);
+                const hasFunctionCall = partsArray.some((p: Gemini.Part) => "functionCall" in p);
+
+                // Only log full structure for thinking or function call parts to reduce noise
+                if (hasThought || hasFunctionCall) {
+                    this.logger.info(`[DEBUG] Full candidate content: ${JSON.stringify(candidate.content, null, 2).substring(0, 1000)}`);
+                }
+            }
+
+            if (candidate?.content?.parts) {
+                const partsArray = candidate.content.parts as Gemini.Part[];
+
+                for (const part of partsArray) {
                     if ("text" in part) {
                         // Handle text content
                         if (part.thought === true) {
                             // Handle thinking content from Gemini
                             const thinkingText = part.text;
                             const delta: OpenAI.StreamDelta = {};
+
+                            // Capture signature and accumulate thought text for caching
+                            // Check both naming conventions (Gemini uses thoughtSignature in REST API)
+                            const textPart = part as Gemini.TextPart;
+                            const sig = textPart.thought_signature || textPart.thoughtSignature;
+                            if (sig) {
+                                currentThoughtSignature = sig;
+                                this.logger.info(`[DEBUG] Found signature on thought text part`);
+                            }
+                            accumulatedThoughtText += thinkingText;
+
                             if (!thinkingInProgress) {
+                                // Just open a simple <thinking> tag - signature is cached server-side
                                 delta.content = "<thinking>\n";
                                 if (this.firstChunk) {
                                     delta.role = "assistant";
@@ -329,7 +360,26 @@ export class GeminiApiClient {
                             thinkingInProgress = false;
                         }
 
+                        // FunctionCallPart can also have thought_signature directly on it
+                        // Check both naming conventions (Gemini uses thoughtSignature in REST API)
+                        const funcPart = part as Gemini.FunctionCallPart;
+                        const funcSig = funcPart.thought_signature || funcPart.thoughtSignature;
+                        if (funcSig && !currentThoughtSignature) {
+                            currentThoughtSignature = funcSig;
+                            this.logger.info(`[DEBUG] Found signature on functionCall part: ${funcSig.substring(0, 50)}...`);
+                        }
+
                         toolCallId = `call_${crypto.randomUUID()}`;
+
+                        // Cache the thought signature with this tool_call_id
+                        // This allows us to restore it when the message comes back in the history
+                        if (currentThoughtSignature) {
+                            signatureCache.store(toolCallId, currentThoughtSignature, accumulatedThoughtText);
+                            this.logger.info(`[DEBUG] Cached signature for tool_call_id: ${toolCallId}`);
+                        } else {
+                            this.logger.info(`[DEBUG] No signature to cache for tool_call_id: ${toolCallId}`);
+                        }
+
                         const delta: OpenAI.StreamDelta = {
                             tool_calls: [{
                                 index: 0,

@@ -2,6 +2,18 @@ import * as OpenAI from "../types/openai.js";
 import * as Gemini from "../types/gemini.js";
 import {DEFAULT_TEMPERATURE} from "../utils/constant.js";
 import {mapModelToGemini, mapJsonSchemaToGemini} from "./mapper.js";
+import {signatureCache} from "./signature-cache.js";
+import {getLogger} from "../utils/logger.js";
+import chalk from "chalk";
+
+const logger = getLogger("OPENAI-MAPPER", chalk.yellow);
+
+// Models that have thinking/reasoning enabled by default and require thought_signature
+const THINKING_MODELS = new Set([
+    Gemini.Model.Gemini3ProPreview,
+    Gemini.Model.Gemini25Pro,
+    Gemini.Model.Gemini25Flash,
+]);
 
 export const mapOpenAIChatCompletionRequestToGemini = (
     project: string,
@@ -27,7 +39,20 @@ export const mapOpenAIChatCompletionRequestToGemini = (
     if (request.tool_choice) {
         geminiRequest.toolConfig = mapToolChoiceToToolConfig(request.tool_choice);
     }
-    if (reasoningEffort) {
+
+    // Always enable includeThoughts for models that support thinking
+    // This ensures we receive thought_signature which is required for tool calls
+    if (THINKING_MODELS.has(model)) {
+        geminiRequest.generationConfig = {
+            ...geminiRequest.generationConfig,
+            thinkingConfig: getThinkingConfig(reasoningEffort) ?? {
+                // Default thinking config for models that require it
+                thinkingBudget: 8192,
+                includeThoughts: true,
+            },
+        };
+    } else if (reasoningEffort) {
+        // For non-thinking models, only enable if explicitly requested
         geminiRequest.generationConfig = {
             ...geminiRequest.generationConfig,
             thinkingConfig: getThinkingConfig(reasoningEffort),
@@ -112,20 +137,72 @@ const mapOpenAIMessageToGeminiFormat = (msg: OpenAI.ChatMessage, prevMsg?: OpenA
         };
     }
 
-    if (msg.role === "assistant" && msg.tool_calls && msg.tool_calls.length > 0) {
+    if (msg.role === "assistant") {
         const parts: Gemini.Part[] = [];
-        if (typeof msg.content === "string" && msg.content.trim()) {
-            parts.push({text: msg.content});
+        let content = typeof msg.content === "string" ? msg.content : "";
+
+        // Debug logging: log what we receive from VS Code
+        logger.info(`[DEBUG] Assistant message content: ${content.substring(0, 200)}...`);
+        if (msg.tool_calls) {
+            logger.info(`[DEBUG] Tool calls: ${JSON.stringify(msg.tool_calls.map(tc => ({id: tc.id, name: tc.function?.name})))}`);
         }
 
-        for (const toolCall of msg.tool_calls) {
-            if (toolCall.type === "function") {
+        // Try to get thought signature from cache using tool_call_ids
+        let thoughtSignature: string | undefined;
+        let cachedThoughtText: string | undefined;
+
+        if (msg.tool_calls && msg.tool_calls.length > 0) {
+            // Look up signature from any tool_call_id
+            logger.info(`[DEBUG] Looking up signatures for ${msg.tool_calls.length} tool calls, cache size: ${signatureCache.size}`);
+            for (const toolCall of msg.tool_calls) {
+                const cached = signatureCache.get(toolCall.id);
+                if (cached) {
+                    thoughtSignature = cached.signature;
+                    cachedThoughtText = cached.thoughtText;
+                    logger.info(`[DEBUG] Found cached signature for tool_call_id: ${toolCall.id}`);
+                    break;
+                } else {
+                    logger.info(`[DEBUG] No cached signature for tool_call_id: ${toolCall.id}`);
+                }
+            }
+        }
+
+        // Check for thinking block in content (may be stripped by VS Code, but try anyway)
+        const thinkingMatch = content.match(/<thinking(?:\s+signature="[^"]*")?>([\s\S]*?)<\/thinking>/);
+
+        if (thinkingMatch || cachedThoughtText) {
+            // Prefer cached thought text if available (more reliable than parsed content)
+            const thoughtText = cachedThoughtText ?? thinkingMatch?.[1] ?? "";
+
+            if (thoughtText) {
                 parts.push({
-                    functionCall: {
-                        name: toolCall.function.name,
-                        args: JSON.parse(toolCall.function.arguments)
-                    }
+                    text: thoughtText,
+                    thought: true,
+                    thought_signature: thoughtSignature
                 });
+            }
+
+            // Remove thinking block from content to get the rest of the text
+            if (thinkingMatch) {
+                content = content.replace(thinkingMatch[0], "").trim();
+            }
+        }
+
+        if (content) {
+            parts.push({text: content});
+        }
+
+        if (msg.tool_calls && msg.tool_calls.length > 0) {
+            for (const toolCall of msg.tool_calls) {
+                if (toolCall.type === "function") {
+                    parts.push({
+                        functionCall: {
+                            name: toolCall.function.name,
+                            args: JSON.parse(toolCall.function.arguments)
+                        },
+                        thought_signature: thoughtSignature
+                    });
+                }
             }
         }
 
@@ -175,10 +252,48 @@ const mapOpenAIMessageToGeminiFormat = (msg: OpenAI.ChatMessage, prevMsg?: OpenA
 
 const mapOpenAIMessagesToGeminiFormat = (messages: OpenAI.ChatMessage[]): Gemini.ChatMessage[] => {
     const geminiMessages: Gemini.ChatMessage[] = [];
-    let prevMessage: OpenAI.ChatMessage | undefined = undefined;
-    for (const message of messages) {
-        geminiMessages.push(mapOpenAIMessageToGeminiFormat(message, prevMessage));
-        prevMessage = message;
+    
+    for (let i = 0; i < messages.length; i++) {
+        const message = messages[i];
+
+        if (message.role === "tool") {
+            // Collect all consecutive tool messages
+            const toolMessages = [message];
+            while (i + 1 < messages.length && messages[i + 1].role === "tool") {
+                toolMessages.push(messages[i + 1]);
+                i++;
+            }
+
+            // Find the assistant message that triggered these calls
+            let assistantMessage: OpenAI.ChatMessage | undefined;
+            for (let j = i - toolMessages.length; j >= 0; j--) {
+                if (messages[j].role === "assistant" && messages[j].tool_calls) {
+                    assistantMessage = messages[j];
+                    break;
+                }
+            }
+
+            const parts: Gemini.Part[] = toolMessages.map(toolMsg => {
+                const toolCallId = toolMsg.tool_call_id;
+                const toolCall = assistantMessage?.tool_calls?.find(tc => tc.id === toolCallId);
+
+                return {
+                    functionResponse: {
+                        name: toolCall?.function.name ?? "unknown",
+                        response: {
+                            result: typeof toolMsg.content === "string" ? toolMsg.content : JSON.stringify(toolMsg.content)
+                        }
+                    }
+                };
+            });
+
+            geminiMessages.push({
+                role: "user",
+                parts: parts
+            });
+        } else {
+            geminiMessages.push(mapOpenAIMessageToGeminiFormat(message));
+        }
     }
     return geminiMessages;
 };

@@ -699,4 +699,30 @@ describe("mapJsonSchemaToGemini", () => {
             });
         });
     });
+
+    describe("filtering internal properties", () => {
+        it("should remove properties starting with ~ or _def", () => {
+            const schema: JsonSchema = {
+                type: "object",
+                properties: {
+                    name: {
+                        type: "string",
+                        "~standard": {validate: true},
+                        "_def": {internal: true}
+                    }
+                }
+            } as unknown as JsonSchema;
+
+            const result = mapJsonSchemaToGemini(schema);
+
+            expect(result).toEqual({
+                type: "object",
+                properties: {
+                    name: {
+                        type: "string"
+                    }
+                }
+            });
+        });
+    });
 });

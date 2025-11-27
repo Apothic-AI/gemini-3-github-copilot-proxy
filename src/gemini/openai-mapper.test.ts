@@ -2,6 +2,7 @@ import {describe, it, expect} from "vitest";
 import {mapOpenAIChatCompletionRequestToGemini} from "./openai-mapper.js";
 import * as OpenAI from "../types/openai.js";
 import * as Gemini from "../types/gemini.js";
+import {signatureCache} from "./signature-cache.js";
 
 describe("mapOpenAIChatCompletionRequestToGemini", () => {
     it("should map basic request with simple message", () => {
@@ -948,9 +949,10 @@ describe("reasoning/thinking config mapping", () => {
         });
     });
 
-    it("should handle undefined reasoning effort", () => {
+    it("should handle undefined reasoning effort for non-thinking model", () => {
+        // gemini-2.5-flash-lite doesn't have thinking enabled by default
         const request: OpenAI.ChatCompletionRequest = {
-            model: "gemini-2.5-pro",
+            model: "gemini-2.5-flash-lite",
             messages: [
                 {
                     role: "user",
@@ -964,9 +966,30 @@ describe("reasoning/thinking config mapping", () => {
         expect(result.request.generationConfig?.thinkingConfig).toBeUndefined();
     });
 
-    it("should handle invalid reasoning effort value", () => {
+    it("should enable default thinkingConfig for thinking models without reasoning_effort", () => {
+        // gemini-2.5-pro is a thinking model and should have thinkingConfig by default
         const request: OpenAI.ChatCompletionRequest = {
             model: "gemini-2.5-pro",
+            messages: [
+                {
+                    role: "user",
+                    content: "Think about this"
+                }
+            ]
+        };
+
+        const result = mapOpenAIChatCompletionRequestToGemini("test-project", request);
+
+        expect(result.request.generationConfig?.thinkingConfig).toEqual({
+            thinkingBudget: 8192,
+            includeThoughts: true,
+        });
+    });
+
+    it("should handle invalid reasoning effort value for non-thinking model", () => {
+        // gemini-2.5-flash-lite doesn't have thinking enabled by default
+        const request: OpenAI.ChatCompletionRequest = {
+            model: "gemini-2.5-flash-lite",
             reasoning_effort: "invalid" as unknown as OpenAI.ReasoningEffort,
             messages: [
                 {
@@ -979,5 +1002,110 @@ describe("reasoning/thinking config mapping", () => {
         const result = mapOpenAIChatCompletionRequestToGemini("test-project", request);
 
         expect(result.request.generationConfig?.thinkingConfig).toBeUndefined();
+    });
+});
+
+describe("OpenAI to Gemini mapping integration tests", () => {
+    it("should group multiple tool responses into a single user message", () => {
+        const request: OpenAI.ChatCompletionRequest = {
+            model: "gemini-2.5-pro",
+            messages: [
+                {
+                    role: "assistant",
+                    content: "",
+                    tool_calls: [
+                        {
+                            index: 0,
+                            id: "call_1",
+                            type: "function",
+                            function: {name: "func1", arguments: "{}"}
+                        },
+                        {
+                            index: 1,
+                            id: "call_2",
+                            type: "function",
+                            function: {name: "func2", arguments: "{}"}
+                        }
+                    ]
+                },
+                {
+                    role: "tool",
+                    tool_call_id: "call_1",
+                    content: "result1"
+                },
+                {
+                    role: "tool",
+                    tool_call_id: "call_2",
+                    content: "result2"
+                }
+            ]
+        };
+
+        const result = mapOpenAIChatCompletionRequestToGemini("test-project", request);
+
+        expect(result.request.contents).toHaveLength(2);
+        
+        // First message is the model's tool calls
+        expect(result.request.contents[0].role).toBe("model");
+        expect(result.request.contents[0].parts).toHaveLength(2);
+        
+        // Second message should be the user's tool responses (grouped)
+        expect(result.request.contents[1].role).toBe("user");
+        expect(result.request.contents[1].parts).toHaveLength(2);
+        expect(result.request.contents[1].parts[0]).toEqual({
+            functionResponse: {
+                name: "func1",
+                response: {result: "result1"}
+            }
+        });
+        expect(result.request.contents[1].parts[1]).toEqual({
+            functionResponse: {
+                name: "func2",
+                response: {result: "result2"}
+            }
+        });
+    });
+
+    it("should retrieve thought signature from cache and apply to function call", () => {
+        // Pre-populate the signature cache (simulating what client.ts does)
+        signatureCache.store("call_1", "sig123", "I should call a function");
+
+        const request: OpenAI.ChatCompletionRequest = {
+            model: "gemini-2.5-pro",
+            messages: [
+                {
+                    role: "assistant",
+                    content: '<thinking>I should call a function</thinking>',  // No signature in content
+                    tool_calls: [
+                        {
+                            index: 0,
+                            id: "call_1",
+                            type: "function",
+                            function: {name: "func1", arguments: "{}"}
+                        }
+                    ]
+                }
+            ]
+        };
+
+        const result = mapOpenAIChatCompletionRequestToGemini("test-project", request);
+
+        expect(result.request.contents[0].parts).toHaveLength(2);
+
+        // Thought part - uses cached thought text and signature
+        expect(result.request.contents[0].parts[0]).toEqual({
+            text: "I should call a function",
+            thought: true,
+            thought_signature: "sig123"
+        });
+
+        // Function call part - uses cached signature
+        expect(result.request.contents[0].parts[1]).toEqual({
+            functionCall: {
+                name: "func1",
+                args: {}
+            },
+            thought_signature: "sig123"
+        });
     });
 });

@@ -54,6 +54,10 @@ export type FunctionCall = {
 
 export type FunctionCallPart = {
     functionCall: FunctionCall;
+    thought?: boolean;
+    // Gemini API uses both naming conventions depending on the endpoint
+    thought_signature?: string;
+    thoughtSignature?: string;
 };
 
 export type FunctionResponsePart = {
@@ -66,6 +70,9 @@ export type FunctionResponsePart = {
 export type TextPart = {
     text: string;
     thought?: boolean;
+    // Gemini API uses both naming conventions depending on the endpoint
+    thought_signature?: string;
+    thoughtSignature?: string;
 };
 
 export type Part =

@@ -31,8 +31,16 @@ export function createOpenAIRouter(geminiClient: GeminiApiClient): express.Route
             if (!body.messages.length) {
                 return res.status(400).json({error: "messages is a required field"});
             }
+
+            // Debug: log incoming request details
+            logger.info(`[DEBUG] Model: ${body.model}, reasoning_effort: ${body.reasoning_effort}, reasoning: ${JSON.stringify(body.reasoning)}`);
+
             const projectId = await geminiClient.discoverProjectId();
             const geminiCompletionRequest = mapOpenAIChatCompletionRequestToGemini(projectId, body);
+
+            // Debug: log the thinkingConfig being sent to Gemini
+            logger.info(`[DEBUG] ThinkingConfig: ${JSON.stringify(geminiCompletionRequest.request.generationConfig?.thinkingConfig)}`);
+            logger.info(`[DEBUG] Gemini model: ${geminiCompletionRequest.model}`);
 
             if (body.stream) {
                 res.setHeader("Content-Type", "text/event-stream");

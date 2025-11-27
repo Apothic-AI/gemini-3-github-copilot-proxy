@@ -82,8 +82,8 @@ const convertJsonSchemaObject = (schema: JsonSchema): JsonSchema => {
     const result: JsonSchema = {};
 
     for (const [key, value] of Object.entries(schema)) {
-        if (key === "definitions" || key === "$schema") {
-            // Skip definitions and $schema in the output
+        if (key === "definitions" || key === "$schema" || key === "~standard" || key === "_def") {
+            // Skip definitions, $schema, and internal library fields in the output
             continue;
         }
 
