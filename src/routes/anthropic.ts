@@ -95,12 +95,12 @@ export function createAnthropicRouter(geminiClient: GeminiApiClient): express.Ro
                     res.write(`event: content_block_start\ndata: ${JSON.stringify(contentBlockStart)}\n\n`);
 
                     const geminiStream = geminiClient.streamContent(geminiRequest);
-                    let totalContent = "";
+                    let totalContentLength = 0;
                     
                     for await (const chunk of geminiStream) {
                         if (chunk.choices && chunk.choices[0]?.delta?.content) {
                             const deltaText = chunk.choices[0].delta.content;
-                            totalContent += deltaText;
+                            totalContentLength += deltaText.length;
                             
                             const contentDelta: Anthropic.ContentBlockDeltaEvent = {
                                 type: "content_block_delta",
@@ -128,7 +128,7 @@ export function createAnthropicRouter(geminiClient: GeminiApiClient): express.Ro
                             stop_reason: "end_turn"
                         },
                         usage: {
-                            output_tokens: Math.ceil(totalContent.length / 4) // Rough token estimate
+                            output_tokens: Math.ceil(totalContentLength / 4) // Rough token estimate
                         }
                     };
                     res.write(`event: message_delta\ndata: ${JSON.stringify(messageDelta)}\n\n`);

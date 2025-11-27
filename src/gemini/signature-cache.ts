@@ -28,6 +28,8 @@ const MAX_CACHE_SIZE = 10000;
 class SignatureCache {
     private db: Database.Database;
     private cleanupInterval: ReturnType<typeof setInterval> | null = null;
+    private l1Cache = new Map<string, CachedSignature>();
+    private static readonly L1_CACHE_SIZE = 1000;
 
     // Prepared statements for better performance
     private stmtInsert!: Database.Statement;
@@ -113,6 +115,15 @@ class SignatureCache {
      * Store a thought signature for a given tool_call_id
      */
     store(toolCallId: string, signature: string, thoughtText: string): void {
+        const timestamp = Date.now();
+        
+        // Update L1 Cache
+        if (this.l1Cache.size >= SignatureCache.L1_CACHE_SIZE) {
+            const firstKey = this.l1Cache.keys().next().value;
+            if (firstKey) this.l1Cache.delete(firstKey);
+        }
+        this.l1Cache.set(toolCallId, {signature, thoughtText, timestamp});
+
         // Enforce max size by removing oldest entries if needed
         const count = (this.stmtCount.get() as {count: number}).count;
         if (count >= MAX_CACHE_SIZE) {
@@ -120,28 +131,46 @@ class SignatureCache {
             this.stmtDeleteOldest.run(toDelete);
         }
 
-        this.stmtInsert.run(toolCallId, signature, thoughtText, Date.now());
+        this.stmtInsert.run(toolCallId, signature, thoughtText, timestamp);
     }
 
     /**
      * Retrieve a cached signature by tool_call_id
      */
     get(toolCallId: string): CachedSignature | undefined {
+        // Check L1 Cache first
+        if (this.l1Cache.has(toolCallId)) {
+            return this.l1Cache.get(toolCallId);
+        }
+
         const row = this.stmtGet.get(toolCallId) as {signature: string; thoughtText: string; timestamp: number} | undefined;
         if (!row) {
             return undefined;
         }
-        return {
+        
+        const cached = {
             signature: row.signature,
             thoughtText: row.thoughtText,
             timestamp: row.timestamp
         };
+
+        // Populate L1 Cache
+        if (this.l1Cache.size >= SignatureCache.L1_CACHE_SIZE) {
+            const firstKey = this.l1Cache.keys().next().value;
+            if (firstKey) this.l1Cache.delete(firstKey);
+        }
+        this.l1Cache.set(toolCallId, cached);
+
+        return cached;
     }
 
     /**
      * Check if a signature exists for a tool_call_id
      */
     has(toolCallId: string): boolean {
+        if (this.l1Cache.has(toolCallId)) {
+            return true;
+        }
         return this.stmtHas.get(toolCallId) !== undefined;
     }
 
@@ -150,6 +179,14 @@ class SignatureCache {
      */
     private cleanup(): void {
         const expiryTime = Date.now() - CACHE_EXPIRY_MS;
+        
+        // Cleanup L1 Cache
+        for (const [key, value] of this.l1Cache.entries()) {
+            if (value.timestamp < expiryTime) {
+                this.l1Cache.delete(key);
+            }
+        }
+
         this.stmtDeleteExpired.run(expiryTime);
     }
 
@@ -164,6 +201,7 @@ class SignatureCache {
      * Clear all entries from the cache (useful for testing)
      */
     clear(): void {
+        this.l1Cache.clear();
         this.db.exec("DELETE FROM signatures");
     }
 

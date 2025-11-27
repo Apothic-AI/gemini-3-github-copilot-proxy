@@ -142,12 +142,14 @@ const mapOpenAIMessageToGeminiFormat = (msg: OpenAI.ChatMessage, prevMsg?: OpenA
         let content = typeof msg.content === "string" ? msg.content : "";
 
         // Debug logging (only shown with --log-level debug)
-        logger.debug(`Assistant message content: ${content.substring(0, 200)}...`);
-        if (msg.tool_calls) {
-            logger.debug(`Tool calls: ${JSON.stringify(msg.tool_calls.map(tc => ({id: tc.id, name: tc.function?.name})))}`);
-        }
-        if (msg.thinking || msg.signature || msg.cot_summary || msg.cot_id) {
-            logger.debug(`Thinking fields: thinking=${!!msg.thinking}, signature=${!!msg.signature}, cot_summary=${!!msg.cot_summary}, cot_id=${!!msg.cot_id}`);
+        if (logger.isDebugEnabled()) {
+            logger.debug(`Assistant message content: ${content.substring(0, 200)}...`);
+            if (msg.tool_calls) {
+                logger.debug(`Tool calls: ${JSON.stringify(msg.tool_calls.map(tc => ({id: tc.id, name: tc.function?.name})))}`);
+            }
+            if (msg.thinking || msg.signature || msg.cot_summary || msg.cot_id) {
+                logger.debug(`Thinking fields: thinking=${!!msg.thinking}, signature=${!!msg.signature}, cot_summary=${!!msg.cot_summary}, cot_id=${!!msg.cot_id}`);
+            }
         }
 
         // Try to get thought signature from multiple sources:
@@ -292,7 +294,7 @@ const mapOpenAIMessagesToGeminiFormat = (messages: OpenAI.ChatMessage[]): Gemini
 
             geminiMessages.push({
                 role: "user",
-                parts: parts
+                parts
             });
         } else {
             geminiMessages.push(mapOpenAIMessageToGeminiFormat(message));
@@ -325,7 +327,7 @@ const thinkingBudgetMap: Record<OpenAI.ReasoningEffort, number> = {
 
 const convertOpenAIFunctionToGemini = (fn: OpenAI.FunctionDeclaration): Gemini.FunctionDeclaration => {
     // Only keep the fields that are valid for Gemini FunctionDeclaration
-    const {name, description, parameters, ...extraFields} = fn;
+    const {name, description, parameters} = fn;
 
     if (!parameters) {
         return {

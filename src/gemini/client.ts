@@ -293,7 +293,7 @@ export class GeminiApiClient {
             const candidate = jsonData.response?.candidates?.[0];
 
             // Debug logging (only shown with --log-level debug)
-            if (candidate?.content?.parts) {
+            if (this.logger.isDebugEnabled() && candidate?.content?.parts) {
                 const partsArray = candidate.content.parts as Gemini.Part[];
                 const hasThought = partsArray.some((p: Gemini.Part) => "text" in p && (p as Gemini.TextPart).thought);
                 const hasFunctionCall = partsArray.some((p: Gemini.Part) => "functionCall" in p);

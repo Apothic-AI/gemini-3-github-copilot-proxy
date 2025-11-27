@@ -31,6 +31,7 @@ export type Logger = {
     warn: (msg: string, ...optionalParams: unknown[]) => void;
     info: (msg: string, ...optionalParams: unknown[]) => void;
     debug: (msg: string, ...optionalParams: unknown[]) => void;
+    isDebugEnabled: () => boolean;
 };
 
 export const getLogger = (prefix: string, chalk: ChalkInstance): Logger => ({
@@ -53,5 +54,6 @@ export const getLogger = (prefix: string, chalk: ChalkInstance): Logger => ({
         if (currentLogLevel >= LogLevel.debug) {
             console.debug(`${chalk.bold.gray(`[${prefix}]`)} ${chalk.gray(msg)}`, ...optionalParams);
         }
-    }
+    },
+    isDebugEnabled: () => currentLogLevel >= LogLevel.debug
 });

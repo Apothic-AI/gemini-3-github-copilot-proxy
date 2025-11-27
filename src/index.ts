@@ -49,35 +49,19 @@ export async function startServer() {
             next();
         });
 
-        // Custom JSON parsing with better error handling
-        app.use((req, res, next) => {
-            if (req.headers["content-type"]?.includes("application/json")) {
-                let body = "";
-                req.on("data", chunk => {
-                    body += chunk.toString();
+        // Use express.json() for better performance
+        app.use(express.json({ limit: "50mb" }));
+
+        // Custom error handler for JSON parse errors
+        app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+            if (err instanceof SyntaxError && "body" in err) {
+                logger.error(`json parse error: ${err.message}`);
+                return res.status(400).json({
+                    error: "Invalid JSON in request body",
+                    details: err.message
                 });
-                req.on("end", () => {
-                    try {
-                        if (body) {
-                            req.body = JSON.parse(body);
-                        }
-                        next();
-                    } catch (err) {
-                        if (err instanceof Error) {
-                            logger.error(`json parse error: ${err.message}`);
-                            res.status(400).json({
-                                error: "Invalid JSON in request body",
-                                details: err.message,
-                                position: body.length > 0 ? Math.min(500, body.length) : 0
-                            });
-                        } else {
-                            logger.error(err as string);
-                        }
-                    }
-                });
-            } else {
-                next();
             }
+            next(err);
         });
 
         app.get("/", (_req, res) => {
