@@ -12,7 +12,7 @@ import {
     DISABLE_BROWSER_AUTH,
     DISABLE_GOOGLE_SEARCH
 } from "./utils/constant.js";
-import {getLogger} from "./utils/logger.js";
+import {getLogger, setLogLevel} from "./utils/logger.js";
 import chalk from "chalk";
 
 const program = new Command()
@@ -21,9 +21,13 @@ const program = new Command()
     .option("--disable-browser-auth", "Disables browser auth flow and uses code based auth", DISABLE_BROWSER_AUTH)
     .option("--disable-google-search", "Disables native Google Search tool", DISABLE_GOOGLE_SEARCH)
     .option("--disable-auto-model-switch", "Disables auto model switching in case of rate limiting", DISABLE_AUTO_MODEL_SWITCH)
+    .option("-l, --log-level <level>", "Log level: error, warn, info, debug", "info")
     .parse(process.argv);
 
 const opts = program.opts();
+
+// Set log level before anything else
+setLogLevel(opts.logLevel ?? "info");
 
 export async function startServer() {
     const logger = getLogger("SERVER", chalk.green);

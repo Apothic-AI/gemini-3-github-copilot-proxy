@@ -141,14 +141,13 @@ const mapOpenAIMessageToGeminiFormat = (msg: OpenAI.ChatMessage, prevMsg?: OpenA
         const parts: Gemini.Part[] = [];
         let content = typeof msg.content === "string" ? msg.content : "";
 
-        // Debug logging: log what we receive from VS Code
-        logger.info(`[DEBUG] Assistant message content: ${content.substring(0, 200)}...`);
+        // Debug logging (only shown with --log-level debug)
+        logger.debug(`Assistant message content: ${content.substring(0, 200)}...`);
         if (msg.tool_calls) {
-            logger.info(`[DEBUG] Tool calls: ${JSON.stringify(msg.tool_calls.map(tc => ({id: tc.id, name: tc.function?.name})))}`);
+            logger.debug(`Tool calls: ${JSON.stringify(msg.tool_calls.map(tc => ({id: tc.id, name: tc.function?.name})))}`);
         }
-        // Log thinking fields if present
         if (msg.thinking || msg.signature || msg.cot_summary || msg.cot_id) {
-            logger.info(`[DEBUG] Thinking fields: thinking=${!!msg.thinking}, signature=${!!msg.signature}, cot_summary=${!!msg.cot_summary}, cot_id=${!!msg.cot_id}`);
+            logger.debug(`Thinking fields: thinking=${!!msg.thinking}, signature=${!!msg.signature}, cot_summary=${!!msg.cot_summary}, cot_id=${!!msg.cot_id}`);
         }
 
         // Try to get thought signature from multiple sources:
@@ -160,17 +159,17 @@ const mapOpenAIMessageToGeminiFormat = (msg: OpenAI.ChatMessage, prevMsg?: OpenA
 
         if (msg.tool_calls && msg.tool_calls.length > 0) {
             // Look up signature from cache using tool_call_id
-            logger.info(`[DEBUG] Looking up signatures for ${msg.tool_calls.length} tool calls, cache size: ${signatureCache.size}`);
+            logger.debug(`Looking up signatures for ${msg.tool_calls.length} tool calls, cache size: ${signatureCache.size}`);
             for (const toolCall of msg.tool_calls) {
                 const cached = signatureCache.get(toolCall.id);
                 if (cached) {
                     // Cache takes precedence if available
                     thoughtSignature = cached.signature;
                     thoughtText = thoughtText || cached.thoughtText;
-                    logger.info(`[DEBUG] Found cached signature for tool_call_id: ${toolCall.id}`);
+                    logger.debug(`Found cached signature for tool_call_id: ${toolCall.id}`);
                     break;
                 } else {
-                    logger.info(`[DEBUG] No cached signature for tool_call_id: ${toolCall.id}`);
+                    logger.debug(`No cached signature for tool_call_id: ${toolCall.id}`);
                 }
             }
         }

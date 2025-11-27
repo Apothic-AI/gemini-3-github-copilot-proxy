@@ -288,15 +288,15 @@ export class GeminiApiClient {
         for await (const jsonData of this.parseSSEStream(response.body)) {
             const candidate = jsonData.response?.candidates?.[0];
 
-            // Debug: log full response structure to find where thought_signature might be
+            // Debug logging (only shown with --log-level debug)
             if (candidate?.content?.parts) {
                 const partsArray = candidate.content.parts as Gemini.Part[];
                 const hasThought = partsArray.some((p: Gemini.Part) => "text" in p && (p as Gemini.TextPart).thought);
                 const hasFunctionCall = partsArray.some((p: Gemini.Part) => "functionCall" in p);
 
-                // Only log full structure for thinking or function call parts to reduce noise
+                // Only log full structure for thinking or function call parts
                 if (hasThought || hasFunctionCall) {
-                    this.logger.info(`[DEBUG] Full candidate content: ${JSON.stringify(candidate.content, null, 2).substring(0, 1000)}`);
+                    this.logger.debug(`Full candidate content: ${JSON.stringify(candidate.content, null, 2).substring(0, 1000)}`);
                 }
             }
 
@@ -316,7 +316,7 @@ export class GeminiApiClient {
                             const sig = textPart.thought_signature || textPart.thoughtSignature;
                             if (sig) {
                                 currentThoughtSignature = sig;
-                                this.logger.info(`[DEBUG] Found signature on thought text part`);
+                                this.logger.debug(`Found signature on thought text part`);
                             }
                             accumulatedThoughtText += thinkingText;
 
@@ -360,7 +360,7 @@ export class GeminiApiClient {
                         const funcSig = funcPart.thought_signature || funcPart.thoughtSignature;
                         if (funcSig && !currentThoughtSignature) {
                             currentThoughtSignature = funcSig;
-                            this.logger.info(`[DEBUG] Found signature on functionCall part: ${funcSig.substring(0, 50)}...`);
+                            this.logger.debug(`Found signature on functionCall part: ${funcSig.substring(0, 50)}...`);
                         }
 
                         toolCallId = `call_${crypto.randomUUID()}`;
@@ -369,9 +369,9 @@ export class GeminiApiClient {
                         // This allows us to restore it when the message comes back in the history
                         if (currentThoughtSignature) {
                             signatureCache.store(toolCallId, currentThoughtSignature, accumulatedThoughtText);
-                            this.logger.info(`[DEBUG] Cached signature for tool_call_id: ${toolCallId}`);
+                            this.logger.debug(`Cached signature for tool_call_id: ${toolCallId}`);
                         } else {
-                            this.logger.info(`[DEBUG] No signature to cache for tool_call_id: ${toolCallId}`);
+                            this.logger.debug(`No signature to cache for tool_call_id: ${toolCallId}`);
                         }
 
                         const delta: OpenAI.StreamDelta = {

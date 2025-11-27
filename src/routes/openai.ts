@@ -32,15 +32,14 @@ export function createOpenAIRouter(geminiClient: GeminiApiClient): express.Route
                 return res.status(400).json({error: "messages is a required field"});
             }
 
-            // Debug: log incoming request details
-            logger.info(`[DEBUG] Model: ${body.model}, reasoning_effort: ${body.reasoning_effort}, reasoning: ${JSON.stringify(body.reasoning)}`);
+            // Debug logging (only shown with --log-level debug)
+            logger.debug(`Model: ${body.model}, reasoning_effort: ${body.reasoning_effort}, reasoning: ${JSON.stringify(body.reasoning)}`);
 
             const projectId = await geminiClient.discoverProjectId();
             const geminiCompletionRequest = mapOpenAIChatCompletionRequestToGemini(projectId, body);
 
-            // Debug: log the thinkingConfig being sent to Gemini
-            logger.info(`[DEBUG] ThinkingConfig: ${JSON.stringify(geminiCompletionRequest.request.generationConfig?.thinkingConfig)}`);
-            logger.info(`[DEBUG] Gemini model: ${geminiCompletionRequest.model}`);
+            logger.debug(`ThinkingConfig: ${JSON.stringify(geminiCompletionRequest.request.generationConfig?.thinkingConfig)}`);
+            logger.debug(`Gemini model: ${geminiCompletionRequest.model}`);
 
             if (body.stream) {
                 res.setHeader("Content-Type", "text/event-stream");
@@ -49,32 +48,22 @@ export function createOpenAIRouter(geminiClient: GeminiApiClient): express.Route
                 res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
                 res.setHeader("Access-Control-Allow-Origin", "*");
 
-                const {readable, writable} = new TransformStream();
-                const writer = writable.getWriter();
-                const reader = readable.getReader();
-
-                (async () => {
-                    try {
-                        const geminiStream = geminiClient.streamContent(geminiCompletionRequest);
-                        for await (const chunk of geminiStream) {
-                            await writer.write(chunk);
-                        }
-                        await writer.close();
-                    } catch (error) {
-                        logger.error("stream error", error);
+                try {
+                    // Stream directly to response - no intermediate TransformStream
+                    const geminiStream = geminiClient.streamContent(geminiCompletionRequest);
+                    for await (const chunk of geminiStream) {
+                        res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+                    }
+                    res.write("data: [DONE]\n\n");
+                    res.end();
+                } catch (error) {
+                    logger.error("stream error", error);
+                    if (!res.headersSent) {
                         const errorMessage = error instanceof Error ? error.message : "Unknown stream error";
-                        await writer.abort(errorMessage);
-                    }
-                })();
-
-                while (true) {
-                    const {done, value} = await reader.read();
-                    if (done) {
-                        res.write("data: [DONE]\n\n");
+                        res.status(500).json({error: errorMessage});
+                    } else {
                         res.end();
-                        break;
                     }
-                    res.write(`data: ${JSON.stringify(value)}\n\n`);
                 }
             } else {
                 // Non-streaming response
