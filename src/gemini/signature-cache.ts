@@ -1,10 +1,17 @@
 /**
- * In-memory cache for thought signatures.
+ * SQLite-based persistent cache for thought signatures.
  *
  * Gemini requires thought_signature to be included with function calls that follow
  * thinking blocks. Since VS Code Copilot strips custom attributes from message content,
  * we cache the signature server-side using the tool_call_id as the key.
+ *
+ * This cache persists across server restarts by storing data in SQLite.
  */
+
+import Database from "better-sqlite3";
+import path from "path";
+import os from "os";
+import fs from "fs";
 
 interface CachedSignature {
     signature: string;
@@ -15,16 +22,91 @@ interface CachedSignature {
 // Cache expiry time: 1 hour (signatures shouldn't be needed after a conversation ends)
 const CACHE_EXPIRY_MS = 60 * 60 * 1000;
 
-// Maximum cache size to prevent memory leaks
+// Maximum cache size to prevent database bloat
 const MAX_CACHE_SIZE = 10000;
 
 class SignatureCache {
-    private cache: Map<string, CachedSignature> = new Map();
+    private db: Database.Database;
     private cleanupInterval: ReturnType<typeof setInterval> | null = null;
 
+    // Prepared statements for better performance
+    private stmtInsert!: Database.Statement;
+    private stmtGet!: Database.Statement;
+    private stmtHas!: Database.Statement;
+    private stmtCount!: Database.Statement;
+    private stmtDeleteOldest!: Database.Statement;
+    private stmtDeleteExpired!: Database.Statement;
+
     constructor() {
+        // Store in ~/.gemini directory alongside oauth_creds.json
+        const geminiDir = path.join(os.homedir(), ".gemini");
+        if (!fs.existsSync(geminiDir)) {
+            fs.mkdirSync(geminiDir, {recursive: true});
+        }
+
+        const dbPath = path.join(geminiDir, "signature-cache.db");
+        this.db = new Database(dbPath);
+
+        // Enable WAL mode for better concurrent performance
+        this.db.pragma("journal_mode = WAL");
+
+        // Create table if it doesn't exist
+        this.db.exec(`
+            CREATE TABLE IF NOT EXISTS signatures (
+                tool_call_id TEXT PRIMARY KEY,
+                signature TEXT NOT NULL,
+                thought_text TEXT NOT NULL,
+                timestamp INTEGER NOT NULL
+            )
+        `);
+
+        // Create index on timestamp for efficient cleanup
+        this.db.exec(`
+            CREATE INDEX IF NOT EXISTS idx_timestamp ON signatures(timestamp)
+        `);
+
+        // Prepare statements
+        this.prepareStatements();
+
+        // Run cleanup on startup to remove expired entries
+        this.cleanup();
+
         // Run cleanup every 10 minutes
         this.cleanupInterval = setInterval(() => this.cleanup(), 10 * 60 * 1000);
+    }
+
+    private prepareStatements(): void {
+        this.stmtInsert = this.db.prepare(`
+            INSERT OR REPLACE INTO signatures (tool_call_id, signature, thought_text, timestamp)
+            VALUES (?, ?, ?, ?)
+        `);
+
+        this.stmtGet = this.db.prepare(`
+            SELECT signature, thought_text as thoughtText, timestamp
+            FROM signatures
+            WHERE tool_call_id = ?
+        `);
+
+        this.stmtHas = this.db.prepare(`
+            SELECT 1 FROM signatures WHERE tool_call_id = ?
+        `);
+
+        this.stmtCount = this.db.prepare(`
+            SELECT COUNT(*) as count FROM signatures
+        `);
+
+        this.stmtDeleteOldest = this.db.prepare(`
+            DELETE FROM signatures
+            WHERE tool_call_id IN (
+                SELECT tool_call_id FROM signatures
+                ORDER BY timestamp ASC
+                LIMIT ?
+            )
+        `);
+
+        this.stmtDeleteExpired = this.db.prepare(`
+            DELETE FROM signatures WHERE timestamp < ?
+        `);
     }
 
     /**
@@ -32,64 +114,68 @@ class SignatureCache {
      */
     store(toolCallId: string, signature: string, thoughtText: string): void {
         // Enforce max size by removing oldest entries if needed
-        if (this.cache.size >= MAX_CACHE_SIZE) {
-            const oldest = Array.from(this.cache.entries())
-                .sort((a, b) => a[1].timestamp - b[1].timestamp)
-                .slice(0, Math.floor(MAX_CACHE_SIZE / 10));
-
-            for (const [key] of oldest) {
-                this.cache.delete(key);
-            }
+        const count = (this.stmtCount.get() as {count: number}).count;
+        if (count >= MAX_CACHE_SIZE) {
+            const toDelete = Math.floor(MAX_CACHE_SIZE / 10);
+            this.stmtDeleteOldest.run(toDelete);
         }
 
-        this.cache.set(toolCallId, {
-            signature,
-            thoughtText,
-            timestamp: Date.now()
-        });
+        this.stmtInsert.run(toolCallId, signature, thoughtText, Date.now());
     }
 
     /**
      * Retrieve a cached signature by tool_call_id
      */
     get(toolCallId: string): CachedSignature | undefined {
-        return this.cache.get(toolCallId);
+        const row = this.stmtGet.get(toolCallId) as {signature: string; thoughtText: string; timestamp: number} | undefined;
+        if (!row) {
+            return undefined;
+        }
+        return {
+            signature: row.signature,
+            thoughtText: row.thoughtText,
+            timestamp: row.timestamp
+        };
     }
 
     /**
      * Check if a signature exists for a tool_call_id
      */
     has(toolCallId: string): boolean {
-        return this.cache.has(toolCallId);
+        return this.stmtHas.get(toolCallId) !== undefined;
     }
 
     /**
      * Remove expired entries from the cache
      */
     private cleanup(): void {
-        const now = Date.now();
-        for (const [key, value] of this.cache.entries()) {
-            if (now - value.timestamp > CACHE_EXPIRY_MS) {
-                this.cache.delete(key);
-            }
-        }
+        const expiryTime = Date.now() - CACHE_EXPIRY_MS;
+        this.stmtDeleteExpired.run(expiryTime);
     }
 
     /**
      * Get cache size (for debugging/monitoring)
      */
     get size(): number {
-        return this.cache.size;
+        return (this.stmtCount.get() as {count: number}).count;
     }
 
     /**
-     * Stop the cleanup interval (for graceful shutdown)
+     * Clear all entries from the cache (useful for testing)
+     */
+    clear(): void {
+        this.db.exec("DELETE FROM signatures");
+    }
+
+    /**
+     * Stop the cleanup interval and close database (for graceful shutdown)
      */
     destroy(): void {
         if (this.cleanupInterval) {
             clearInterval(this.cleanupInterval);
             this.cleanupInterval = null;
         }
+        this.db.close();
     }
 }
 

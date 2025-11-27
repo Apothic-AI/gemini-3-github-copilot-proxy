@@ -279,11 +279,15 @@ export class GeminiApiClient {
 
         let toolCallId: string | undefined = undefined;
         let usageData: OpenAI.UsageData | undefined;
-        let thinkingInProgress = false;
+        let _thinkingInProgress = false;
 
         // Track thought signature and text for caching
         let currentThoughtSignature: string | undefined = undefined;
         let accumulatedThoughtText = "";
+
+        // Buffer for parsing <thinking> tags from content (handles streaming chunks)
+        let thinkingTagBuffer = "";
+        let insideThinkingTag = false;
 
         for await (const jsonData of this.parseSSEStream(response.body)) {
             const candidate = jsonData.response?.candidates?.[0];
@@ -316,17 +320,19 @@ export class GeminiApiClient {
                             const sig = textPart.thought_signature || textPart.thoughtSignature;
                             if (sig) {
                                 currentThoughtSignature = sig;
-                                this.logger.debug(`Found signature on thought text part`);
+                                this.logger.debug("Found signature on thought text part");
                             }
                             accumulatedThoughtText += thinkingText;
 
-                            // Send thinking content via proper delta fields (not embedded in content)
-                            // VS Code Copilot expects: thinking (text) + signature (id)
+                            // Send thinking content using Anthropic-style fields that VS Code Copilot expects
+                            // See: vscode-copilot-chat/src/platform/thinking/common/thinking.ts (RawThinkingDelta)
+                            // - thinking: string (text content)
+                            // - signature: string (ID for multi-turn conversations)
                             const thinkingDelta: OpenAI.StreamDelta = {
                                 thinking: thinkingText,
                             };
 
-                            // Include signature if available
+                            // Include signature - required for multi-turn conversations with tool calls
                             if (currentThoughtSignature) {
                                 thinkingDelta.signature = currentThoughtSignature;
                             }
@@ -336,23 +342,117 @@ export class GeminiApiClient {
                                 this.firstChunk = false;
                             }
 
-                            thinkingInProgress = true;
+                            _thinkingInProgress = true;
                             yield this.createOpenAIChunk(thinkingDelta, geminiCompletionRequest.model);
                         } else {
-                            // Handle regular content - not thinking
-                            thinkingInProgress = false;
+                            // Handle regular content - check for <thinking> tags
+                            let text = part.text;
 
-                            const delta: OpenAI.StreamDelta = {content: part.text};
-                            if (this.firstChunk) {
-                                delta.role = "assistant";
-                                this.firstChunk = false;
+                            // Process text to extract any <thinking> blocks
+                            // This handles cases where thinking comes as raw text with tags
+                            while (text.length > 0) {
+                                if (insideThinkingTag) {
+                                    // We're inside a thinking block, look for closing tag
+                                    const closeIndex = text.indexOf("</thinking>");
+                                    if (closeIndex !== -1) {
+                                        // Found closing tag - emit thinking content
+                                        const thinkingContent = thinkingTagBuffer + text.substring(0, closeIndex);
+                                        thinkingTagBuffer = "";
+                                        insideThinkingTag = false;
+                                        _thinkingInProgress = false;
+
+                                        // Emit thinking via proper delta field
+                                        const thinkingDelta: OpenAI.StreamDelta = {
+                                            thinking: thinkingContent,
+                                        };
+                                        if (currentThoughtSignature) {
+                                            thinkingDelta.signature = currentThoughtSignature;
+                                        }
+                                        if (this.firstChunk) {
+                                            thinkingDelta.role = "assistant";
+                                            this.firstChunk = false;
+                                        }
+                                        accumulatedThoughtText += thinkingContent;
+                                        yield this.createOpenAIChunk(thinkingDelta, geminiCompletionRequest.model);
+
+                                        // Continue processing remaining text after </thinking>
+                                        text = text.substring(closeIndex + "</thinking>".length);
+                                    } else {
+                                        // No closing tag yet, buffer the content
+                                        thinkingTagBuffer += text;
+                                        text = "";
+                                    }
+                                } else {
+                                    // Look for opening <thinking> tag
+                                    const openIndex = text.indexOf("<thinking>");
+                                    if (openIndex !== -1) {
+                                        // Found opening tag
+                                        const beforeThinking = text.substring(0, openIndex);
+
+                                        // Emit any content before the thinking tag
+                                        if (beforeThinking.length > 0) {
+                                            const delta: OpenAI.StreamDelta = {content: beforeThinking};
+                                            if (this.firstChunk) {
+                                                delta.role = "assistant";
+                                                this.firstChunk = false;
+                                            }
+                                            yield this.createOpenAIChunk(delta, geminiCompletionRequest.model);
+                                        }
+
+                                        // Start buffering thinking content
+                                        insideThinkingTag = true;
+                                        _thinkingInProgress = true;
+                                        text = text.substring(openIndex + "<thinking>".length);
+                                    } else {
+                                        // Check for partial opening tag at end of chunk
+                                        // (e.g., text ends with "<thin" which might continue with "king>" in next chunk)
+                                        let partialTagStart = -1;
+                                        const possibleStarts = ["<", "<t", "<th", "<thi", "<thin", "<think", "<thinki", "<thinkin", "<thinking"];
+                                        for (const start of possibleStarts) {
+                                            if (text.endsWith(start)) {
+                                                partialTagStart = text.length - start.length;
+                                                break;
+                                            }
+                                        }
+
+                                        if (partialTagStart !== -1) {
+                                            // Emit content before potential partial tag
+                                            const safeContent = text.substring(0, partialTagStart);
+                                            if (safeContent.length > 0) {
+                                                const delta: OpenAI.StreamDelta = {content: safeContent};
+                                                if (this.firstChunk) {
+                                                    delta.role = "assistant";
+                                                    this.firstChunk = false;
+                                                }
+                                                yield this.createOpenAIChunk(delta, geminiCompletionRequest.model);
+                                            }
+                                            // Buffer the potential partial tag
+                                            thinkingTagBuffer = text.substring(partialTagStart);
+                                        } else {
+                                            // No thinking tags, emit as regular content
+                                            // But first check if we have buffered content that wasn't a tag
+                                            if (thinkingTagBuffer.length > 0) {
+                                                text = thinkingTagBuffer + text;
+                                                thinkingTagBuffer = "";
+                                            }
+
+                                            _thinkingInProgress = false;
+                                            const delta: OpenAI.StreamDelta = {content: text};
+                                            if (this.firstChunk) {
+                                                delta.role = "assistant";
+                                                this.firstChunk = false;
+                                            }
+                                            yield this.createOpenAIChunk(delta, geminiCompletionRequest.model);
+                                        }
+                                        text = "";
+                                    }
+                                }
                             }
-                            yield this.createOpenAIChunk(delta, geminiCompletionRequest.model);
                         }
                     }
                     else if ("functionCall" in part) {
                         // Handle function calls from Gemini
-                        thinkingInProgress = false;
+                        _thinkingInProgress = false;
 
                         // FunctionCallPart can also have thought_signature directly on it
                         // Check both naming conventions (Gemini uses thoughtSignature in REST API)

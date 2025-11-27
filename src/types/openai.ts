@@ -47,9 +47,11 @@ export type ChatMessage = {
     content: string | MessageContent[];
     tool_calls?: ToolCall[];
     tool_call_id?: string;
-    // Thinking/reasoning fields that VS Code Copilot may include in history
+    // Thinking/reasoning fields that clients may include in message history
+    // VS Code Copilot uses Anthropic-style fields
     thinking?: string;
     signature?: string;
+    // Alternative field names for other providers
     cot_id?: string;
     cot_summary?: string;
     reasoning_opaque?: string;
@@ -95,18 +97,16 @@ export type ChatCompletionUsage = {
 export type StreamDelta = {
     role?: string;
     content?: string | null;
-    reasoning?: string;
     tool_calls?: ToolCall[];
     native_tool_calls?: NativeToolResponse[];
     grounding?: unknown;
-    // Thinking/reasoning fields for VS Code Copilot compatibility
-    // Anthropic format
-    thinking?: string;
-    signature?: string;
-    // Azure OpenAI format
+    // Thinking/reasoning fields - VS Code Copilot expects Anthropic-style format
+    // See: vscode-copilot-chat/src/platform/thinking/common/thinking.ts (RawThinkingDelta)
+    thinking?: string;      // Anthropic: thinking text content
+    signature?: string;     // Anthropic: signature ID for multi-turn conversations
+    // Alternative field names for other providers (Azure OpenAI, Copilot API)
     cot_id?: string;
     cot_summary?: string;
-    // Copilot API format
     reasoning_opaque?: string;
     reasoning_text?: string;
 };

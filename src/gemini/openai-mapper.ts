@@ -151,7 +151,7 @@ const mapOpenAIMessageToGeminiFormat = (msg: OpenAI.ChatMessage, prevMsg?: OpenA
         }
 
         // Try to get thought signature from multiple sources:
-        // 1. From message fields (VS Code may include them)
+        // 1. From message fields (VS Code Copilot uses Anthropic-style: thinking + signature)
         // 2. From cache using tool_call_ids
         // 3. From <thinking> tags in content (legacy fallback)
         let thoughtSignature: string | undefined = msg.signature || msg.cot_id || msg.reasoning_opaque;

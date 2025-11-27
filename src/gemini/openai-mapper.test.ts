@@ -1,8 +1,13 @@
-import {describe, it, expect} from "vitest";
+import {describe, it, expect, beforeEach} from "vitest";
 import {mapOpenAIChatCompletionRequestToGemini} from "./openai-mapper.js";
 import * as OpenAI from "../types/openai.js";
 import * as Gemini from "../types/gemini.js";
 import {signatureCache} from "./signature-cache.js";
+
+// Clear cache before each test to avoid cross-test pollution
+beforeEach(() => {
+    signatureCache.clear();
+});
 
 describe("mapOpenAIChatCompletionRequestToGemini", () => {
     it("should map basic request with simple message", () => {
@@ -1075,7 +1080,7 @@ describe("OpenAI to Gemini mapping integration tests", () => {
             messages: [
                 {
                     role: "assistant",
-                    content: '<thinking>I should call a function</thinking>',  // No signature in content
+                    content: "<thinking>I should call a function</thinking>",  // No signature in content
                     tool_calls: [
                         {
                             index: 0,
