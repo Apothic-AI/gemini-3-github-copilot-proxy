@@ -47,6 +47,13 @@ export type ChatMessage = {
     content: string | MessageContent[];
     tool_calls?: ToolCall[];
     tool_call_id?: string;
+    // Thinking/reasoning fields that VS Code Copilot may include in history
+    thinking?: string;
+    signature?: string;
+    cot_id?: string;
+    cot_summary?: string;
+    reasoning_opaque?: string;
+    reasoning_text?: string;
 };
 
 export type MessageContent = {
@@ -92,6 +99,16 @@ export type StreamDelta = {
     tool_calls?: ToolCall[];
     native_tool_calls?: NativeToolResponse[];
     grounding?: unknown;
+    // Thinking/reasoning fields for VS Code Copilot compatibility
+    // Anthropic format
+    thinking?: string;
+    signature?: string;
+    // Azure OpenAI format
+    cot_id?: string;
+    cot_summary?: string;
+    // Copilot API format
+    reasoning_opaque?: string;
+    reasoning_text?: string;
 };
 
 export type NativeToolResponse = {

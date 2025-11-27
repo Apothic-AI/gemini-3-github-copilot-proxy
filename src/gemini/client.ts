@@ -309,7 +309,6 @@ export class GeminiApiClient {
                         if (part.thought === true) {
                             // Handle thinking content from Gemini
                             const thinkingText = part.text;
-                            const delta: OpenAI.StreamDelta = {};
 
                             // Capture signature and accumulate thought text for caching
                             // Check both naming conventions (Gemini uses thoughtSignature in REST API)
@@ -321,27 +320,27 @@ export class GeminiApiClient {
                             }
                             accumulatedThoughtText += thinkingText;
 
-                            if (!thinkingInProgress) {
-                                // Just open a simple <thinking> tag - signature is cached server-side
-                                delta.content = "<thinking>\n";
-                                if (this.firstChunk) {
-                                    delta.role = "assistant";
-                                    this.firstChunk = false;
-                                }
-                                yield this.createOpenAIChunk(delta, geminiCompletionRequest.model);
-                                thinkingInProgress = true;
+                            // Send thinking content via proper delta fields (not embedded in content)
+                            // VS Code Copilot expects: thinking (text) + signature (id)
+                            const thinkingDelta: OpenAI.StreamDelta = {
+                                thinking: thinkingText,
+                            };
+
+                            // Include signature if available
+                            if (currentThoughtSignature) {
+                                thinkingDelta.signature = currentThoughtSignature;
                             }
 
-                            const thinkingDelta: OpenAI.StreamDelta = {content: thinkingText};
+                            if (this.firstChunk) {
+                                thinkingDelta.role = "assistant";
+                                this.firstChunk = false;
+                            }
+
+                            thinkingInProgress = true;
                             yield this.createOpenAIChunk(thinkingDelta, geminiCompletionRequest.model);
                         } else {
-                            // Handle regular content - only if it's not a thinking part
-                            if (thinkingInProgress) {
-                                // Close thinking tag before first real content if needed
-                                const closingDelta: OpenAI.StreamDelta = {content: "\n</thinking>\n\n"};
-                                yield this.createOpenAIChunk(closingDelta, geminiCompletionRequest.model);
-                                thinkingInProgress = false;
-                            }
+                            // Handle regular content - not thinking
+                            thinkingInProgress = false;
 
                             const delta: OpenAI.StreamDelta = {content: part.text};
                             if (this.firstChunk) {
@@ -353,12 +352,7 @@ export class GeminiApiClient {
                     }
                     else if ("functionCall" in part) {
                         // Handle function calls from Gemini
-                        if (thinkingInProgress) {
-                            // Close thinking tag before function call if needed
-                            const closingDelta: OpenAI.StreamDelta = {content: "\n</thinking>\n\n"};
-                            yield this.createOpenAIChunk(closingDelta, geminiCompletionRequest.model);
-                            thinkingInProgress = false;
-                        }
+                        thinkingInProgress = false;
 
                         // FunctionCallPart can also have thought_signature directly on it
                         // Check both naming conventions (Gemini uses thoughtSignature in REST API)

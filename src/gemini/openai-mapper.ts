@@ -146,19 +146,27 @@ const mapOpenAIMessageToGeminiFormat = (msg: OpenAI.ChatMessage, prevMsg?: OpenA
         if (msg.tool_calls) {
             logger.info(`[DEBUG] Tool calls: ${JSON.stringify(msg.tool_calls.map(tc => ({id: tc.id, name: tc.function?.name})))}`);
         }
+        // Log thinking fields if present
+        if (msg.thinking || msg.signature || msg.cot_summary || msg.cot_id) {
+            logger.info(`[DEBUG] Thinking fields: thinking=${!!msg.thinking}, signature=${!!msg.signature}, cot_summary=${!!msg.cot_summary}, cot_id=${!!msg.cot_id}`);
+        }
 
-        // Try to get thought signature from cache using tool_call_ids
-        let thoughtSignature: string | undefined;
-        let cachedThoughtText: string | undefined;
+        // Try to get thought signature from multiple sources:
+        // 1. From message fields (VS Code may include them)
+        // 2. From cache using tool_call_ids
+        // 3. From <thinking> tags in content (legacy fallback)
+        let thoughtSignature: string | undefined = msg.signature || msg.cot_id || msg.reasoning_opaque;
+        let thoughtText: string | undefined = msg.thinking || msg.cot_summary || msg.reasoning_text;
 
         if (msg.tool_calls && msg.tool_calls.length > 0) {
-            // Look up signature from any tool_call_id
+            // Look up signature from cache using tool_call_id
             logger.info(`[DEBUG] Looking up signatures for ${msg.tool_calls.length} tool calls, cache size: ${signatureCache.size}`);
             for (const toolCall of msg.tool_calls) {
                 const cached = signatureCache.get(toolCall.id);
                 if (cached) {
+                    // Cache takes precedence if available
                     thoughtSignature = cached.signature;
-                    cachedThoughtText = cached.thoughtText;
+                    thoughtText = thoughtText || cached.thoughtText;
                     logger.info(`[DEBUG] Found cached signature for tool_call_id: ${toolCall.id}`);
                     break;
                 } else {
@@ -167,25 +175,21 @@ const mapOpenAIMessageToGeminiFormat = (msg: OpenAI.ChatMessage, prevMsg?: OpenA
             }
         }
 
-        // Check for thinking block in content (may be stripped by VS Code, but try anyway)
+        // Check for thinking block in content (legacy fallback)
         const thinkingMatch = content.match(/<thinking(?:\s+signature="[^"]*")?>([\s\S]*?)<\/thinking>/);
+        if (thinkingMatch) {
+            thoughtText = thoughtText || thinkingMatch[1];
+            // Remove thinking block from content
+            content = content.replace(thinkingMatch[0], "").trim();
+        }
 
-        if (thinkingMatch || cachedThoughtText) {
-            // Prefer cached thought text if available (more reliable than parsed content)
-            const thoughtText = cachedThoughtText ?? thinkingMatch?.[1] ?? "";
-
-            if (thoughtText) {
-                parts.push({
-                    text: thoughtText,
-                    thought: true,
-                    thought_signature: thoughtSignature
-                });
-            }
-
-            // Remove thinking block from content to get the rest of the text
-            if (thinkingMatch) {
-                content = content.replace(thinkingMatch[0], "").trim();
-            }
+        // Add thinking part if we have thought text
+        if (thoughtText) {
+            parts.push({
+                text: thoughtText,
+                thought: true,
+                thought_signature: thoughtSignature
+            });
         }
 
         if (content) {
